@@ -58,7 +58,7 @@ public class DeviceScanActivity extends ListActivity {
     private static final long SCAN_PERIOD = 10000;
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getActionBar().setTitle(R.string.title_devices);
         mHandler = new Handler();
@@ -82,8 +82,6 @@ public class DeviceScanActivity extends ListActivity {
             finish();
             return;
         }
-
-
     }
 
     @Override
@@ -279,29 +277,29 @@ public class DeviceScanActivity extends ListActivity {
     private BluetoothAdapter.LeScanCallback mLeScanCallback =
             new BluetoothAdapter.LeScanCallback() {
 
-        @Override
-        public void onLeScan(final BluetoothDevice device, int rssi, byte[] scanRecord) {
-
-
-
-            runOnUiThread(new Runnable() {
                 @Override
-                public void run() {
+                public void onLeScan(final BluetoothDevice device, int rssi, byte[] scanRecord) {
 
-                    if (device.getName() == null || device.getName().length() ==0)
-                        return;
 
-                    String name = device.getName().toUpperCase();
 
-                    if (!name.contains("STAR0") && !name.contains("CROPX"))
-                        return ;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
 
-                    mLeDeviceListAdapter.addDevice(device);
-                    mLeDeviceListAdapter.notifyDataSetChanged();
+                            if (device.getName() == null || device.getName().length() ==0)
+                                return;
+
+                            String name = device.getName().toUpperCase();
+
+                            if (!name.contains("STAR0") && !name.contains("CROPX"))//TODO: change this to search a specific device
+                                return ;
+
+                            mLeDeviceListAdapter.addDevice(device);
+                            mLeDeviceListAdapter.notifyDataSetChanged();
+                        }
+                    });
                 }
-            });
-        }
-    };
+            };
 
     static class ViewHolder {
         TextView deviceName;

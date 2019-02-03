@@ -32,8 +32,14 @@ import android.os.Binder;
 import android.os.IBinder;
 import android.util.Log;
 
+import com.example.android.bluetoothlegatt.starcom.BLECommand;
+import com.example.android.bluetoothlegatt.starcom.Sha256;
+import com.example.android.bluetoothlegatt.starcom.StarcomUUID;
+
 import java.util.List;
 import java.util.UUID;
+
+import static com.example.android.bluetoothlegatt.starcom.Sha256.bytesToHex;
 
 /**
  * Service for managing connection and data communication with a GATT server hosted on a
@@ -41,6 +47,8 @@ import java.util.UUID;
  */
 public class BluetoothLeService extends Service {
     private final static String TAG = BluetoothLeService.class.getSimpleName();
+    private static final String CLIENT_CHARACTERISTIC_CONFIG = "00002902-0000-1000-8000-00805f9b34fb";
+    private static final String CHARACTERISTIC_NOTIFICATION_CONFIG = "00002902-0000-1000-8000-00805f9b34fb";;
 
     private BluetoothManager mBluetoothManager;
     private BluetoothAdapter mBluetoothAdapter;
@@ -62,9 +70,6 @@ public class BluetoothLeService extends Service {
             "com.example.bluetooth.le.ACTION_DATA_AVAILABLE";
     public final static String EXTRA_DATA =
             "com.example.bluetooth.le.EXTRA_DATA";
-
-    public final static UUID UUID_HEART_RATE_MEASUREMENT =
-            UUID.fromString(SampleGattAttributes.HEART_RATE_MEASUREMENT);
 
     // Implements callback methods for GATT events that the app cares about.  For example,
     // connection change and services discovered.
@@ -90,29 +95,156 @@ public class BluetoothLeService extends Service {
         }
 
         @Override
+        public void onReadRemoteRssi(BluetoothGatt gatt, int rssi, int status) {
+            if (mBluetoothDeviceAddress!= null && status == BluetoothGatt.GATT_SUCCESS &&
+                    gatt.getDevice().getAddress().equals(mBluetoothDeviceAddress)){
+                Log.e(TAG,"RSSI: " + rssi);
+            }
+            super.onReadRemoteRssi(gatt, rssi, status);
+        }
+
+        /**
+         * this function is called after services are discovered
+         */
+        @Override
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                broadcastUpdate(ACTION_GATT_SERVICES_DISCOVERED);
+                List<BluetoothGattService> gattServices = gatt.getServices();
+                if (gattServices==null || gattServices.size()<=0){
+                    return;
+                }
+
+                // set notifications for the READ characteristic
+                BluetoothGattCharacteristic characteristicRead =
+                        gatt.getService(StarcomUUID.SERVICE.getmUUID())
+                                .getCharacteristic(StarcomUUID.READ.getmUUID());
+                setCharacteristicNotification(characteristicRead,true);
             } else {
                 Log.w(TAG, "onServicesDiscovered received: " + status);
             }
         }
 
+        /**
+         * this function is called AFTER on description was written
+         */
+        @Override
+        public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                BluetoothGattCharacteristic characteristic = descriptor.getCharacteristic();
+                if (characteristic!=null){
+                    if (!readCharacteristic(characteristic)){
+                        Log.e(TAG, "onDescriptorWrite readCharacteristic(characteristic) failed");
+                    }
+                } else {
+                    Log.e(TAG, "onDescriptorWrite characteristic==null");
+                }
+            } else {
+                Log.e(TAG, "onDescriptorWrite received: " + status);
+            }
+        }
+
+        /**
+         * this function is called AFTER characteristic was read
+         */
         @Override
         public void onCharacteristicRead(BluetoothGatt gatt,
                                          BluetoothGattCharacteristic characteristic,
                                          int status) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic);
+                if (characteristic.getValue()!=null){
+                    Log.e(TAG, "onCharacteristicRead: characteristic.getProperties() = " + characteristic.getProperties());
+                    Log.e(TAG, "onCharacteristicRead: characteristic.getUuid() = " + characteristic.getUuid());
+                    Log.e(TAG, "onCharacteristicRead: characteristic.getValue().length = " +characteristic.getValue().length);
+                    final byte[] data = characteristic.getValue();
+                    if (data != null && data.length > 0) {
+                        Log.e(TAG,"onCharacteristicRead: " + new String(data)+ bytesToHex(data));
+                    }
+                    if (bleAuthorizationSent){
+                        broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic);
+                    } else if (characteristic.getUuid().equals(StarcomUUID.READ.getmUUID())){
+                        byte[] token = Sha256.getSHA256Token(characteristic.getValue());
+                        if (token!=null){
+                            writeCharacteristic(token);
+                        }
+                    }
+                }
+            } else  {
+                Log.e(TAG,"onCharacteristicRead failed");
+            }
+        }
+
+        /**
+         * this function is called after write characteristic
+         */
+        @Override
+        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                if (bleAuthorizationSent){
+//                    sendCommand(BLECommand.ReadVersion); //CHECKS IF THE AUTHENTICATION WAS SUCCESSFUL
+                }
+            } else  {
+                Log.e(TAG,"onCharacteristicWrite failed");
             }
         }
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt,
                                             BluetoothGattCharacteristic characteristic) {
-            broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic);
+            Log.e(TAG,"onCharacteristicChanged");
+            if (characteristic.getValue()!=null ){
+                Log.e(TAG, "onCharacteristicChanged: characteristic.getProperties() = " + characteristic.getProperties());
+                Log.e(TAG, "onCharacteristicChanged: characteristic.getUuid() = " + characteristic.getUuid());
+                Log.e(TAG, "onCharacteristicChanged: characteristic.getValue().length = " +characteristic.getValue().length);
+                final byte[] data = characteristic.getValue();
+                if (data != null && data.length > 0) {
+                    Log.e(TAG,"onCharacteristicChanged: " + new String(data));
+                }
+                if (bleAuthorizationSent){
+                    broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic);
+                } else{
+                    byte[] token = Sha256.getSHA256Token(characteristic.getValue());
+                    if (token!=null){
+                        writeCharacteristic(token);
+                    }
+                }
+            }
         }
     };
+
+    /**
+     * this function writes characteristic to WRITE!!
+     * @param data - the value to insert
+     */
+    private void writeCharacteristic(byte[] data) {
+        if (mBluetoothAdapter == null || mBluetoothGatt == null) {
+            Log.w(TAG, "BluetoothAdapter not initialized");
+        }
+        BluetoothGattCharacteristic characteristic =
+                mBluetoothGatt.getService(StarcomUUID.SERVICE.getmUUID())
+                        .getCharacteristic(StarcomUUID.WRITE.getmUUID());
+        characteristic.setValue(data);
+        if (!mBluetoothGatt.writeCharacteristic(characteristic)){
+            Log.e(TAG,"writeCharacteristic: mBluetoothGatt.writeCharacteristic(" + characteristic.getUuid() + "): - false");
+        }else {
+            bleAuthorizationSent = true;
+        }
+
+
+    }
+
+    private void sendCommand(BLECommand bleCommand) {
+        BluetoothGattCharacteristic characteristic =
+                mBluetoothGatt.getService(StarcomUUID.SERVICE.getmUUID())
+                        .getCharacteristic(StarcomUUID.WRITE.getmUUID());
+
+        characteristic.setValue(BLECommand.getData(bleCommand.getValue()));
+//        characteristicWrite.setWriteType(WRITE_TYPE_SIGNED);
+        if (!mBluetoothGatt.writeCharacteristic(characteristic)){
+            Log.e(TAG,"sendCommand: mBluetoothGatt.writeCharacteristic(" + characteristic.getUuid() + "): - false");
+        }
+    }
+
+    private boolean bleAuthorizationSent = false;
 
     private void broadcastUpdate(final String action) {
         final Intent intent = new Intent(action);
@@ -123,31 +255,16 @@ public class BluetoothLeService extends Service {
                                  final BluetoothGattCharacteristic characteristic) {
         final Intent intent = new Intent(action);
 
-        // This is special handling for the Heart Rate Measurement profile.  Data parsing is
-        // carried out as per profile specifications:
-        // http://developer.bluetooth.org/gatt/characteristics/Pages/CharacteristicViewer.aspx?u=org.bluetooth.characteristic.heart_rate_measurement.xml
-        if (UUID_HEART_RATE_MEASUREMENT.equals(characteristic.getUuid())) {
-            int flag = characteristic.getProperties();
-            int format = -1;
-            if ((flag & 0x01) != 0) {
-                format = BluetoothGattCharacteristic.FORMAT_UINT16;
-                Log.d(TAG, "Heart rate format UINT16.");
-            } else {
-                format = BluetoothGattCharacteristic.FORMAT_UINT8;
-                Log.d(TAG, "Heart rate format UINT8.");
-            }
-            final int heartRate = characteristic.getIntValue(format, 1);
-            Log.d(TAG, String.format("Received heart rate: %d", heartRate));
-            intent.putExtra(EXTRA_DATA, String.valueOf(heartRate));
-        } else {
-            // For all other profiles, writes the data formatted in HEX.
-            final byte[] data = characteristic.getValue();
-            if (data != null && data.length > 0) {
-                final StringBuilder stringBuilder = new StringBuilder(data.length);
-                for(byte byteChar : data)
-                    stringBuilder.append(String.format("%02X ", byteChar));
-                intent.putExtra(EXTRA_DATA, new String(data) + "\n" + stringBuilder.toString());
-            }
+//         This is special handling for the Heart Rate Measurement profile.  Data parsing is
+//         carried out as per profile specifications:
+//         http://developer.bluetooth.org/gatt/characteristics/Pages/CharacteristicViewer.aspx?u=org.bluetooth.characteristic.heart_rate_measurement.xml
+        final byte[] data = characteristic.getValue();
+        if (data != null && data.length > 0) {
+            final StringBuilder stringBuilder = new StringBuilder(data.length);
+            for(byte byteChar : data)
+                stringBuilder.append(String.format("%02X ", byteChar));
+            Log.e(TAG,"broadcastUpdate: " + new String(data));
+            intent.putExtra(EXTRA_DATA, new String(data) + "\n" + stringBuilder.toString());
         }
         sendBroadcast(intent);
     }
@@ -274,17 +391,17 @@ public class BluetoothLeService extends Service {
      *
      * @param characteristic The characteristic to read from.
      */
-    public void readCharacteristic(BluetoothGattCharacteristic characteristic) {
+    public boolean readCharacteristic(BluetoothGattCharacteristic characteristic) {
         if (mBluetoothAdapter == null || mBluetoothGatt == null) {
             Log.w(TAG, "BluetoothAdapter not initialized");
-            return;
+            return false;
         }
-        mBluetoothGatt.readCharacteristic(characteristic);
+        return mBluetoothGatt.readCharacteristic(characteristic);
     }
 
     /**
      * Enables or disables notification on a give characteristic.
-     *
+     * THIS FUNCTION IS CALLED ONLY FOR THE READ CHARACTERISTIC!!!!
      * @param characteristic Characteristic to act on.
      * @param enabled If true, enable notification.  False otherwise.
      */
@@ -294,14 +411,42 @@ public class BluetoothLeService extends Service {
             Log.w(TAG, "BluetoothAdapter not initialized");
             return;
         }
-        mBluetoothGatt.setCharacteristicNotification(characteristic, enabled);
+        if (characteristic != null) {
+            if (mBluetoothGatt.setCharacteristicNotification(characteristic, enabled)) {
 
-        // This is specific to Heart Rate Measurement.
-        if (UUID_HEART_RATE_MEASUREMENT.equals(characteristic.getUuid())) {
-            BluetoothGattDescriptor descriptor = characteristic.getDescriptor(
-                    UUID.fromString(SampleGattAttributes.CLIENT_CHARACTERISTIC_CONFIG));
-            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-            mBluetoothGatt.writeDescriptor(descriptor);
+                BluetoothGattDescriptor descriptor = characteristic.getDescriptor(UUID.fromString(CHARACTERISTIC_NOTIFICATION_CONFIG));
+                if (descriptor != null) {
+                    // Prefer notify over indicate
+                    if ((characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
+                        Log.d(TAG, "Characteristic " + StarcomUUID.getStarcomUUIDFromUUID(characteristic.getUuid()) + " set NOTIFY");
+                        descriptor.setValue(enabled ? BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE : BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE);
+                    } else if ((characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0) {
+                        Log.d(TAG, "Characteristic " + StarcomUUID.getStarcomUUIDFromUUID(characteristic.getUuid()) + " set INDICATE");
+                        descriptor.setValue(enabled ? BluetoothGattDescriptor.ENABLE_INDICATION_VALUE : BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE);
+                    } else {
+                        Log.d(TAG, "Characteristic " + StarcomUUID.getStarcomUUIDFromUUID(characteristic.getUuid()) + " does not have NOTIFY or INDICATE property set");
+                    }
+
+                    try {
+                        if (mBluetoothGatt.writeDescriptor(descriptor)) {
+                            Log.d(TAG, "setNotify complete");
+                        } else {
+                            Log.e(TAG,"Failed to set client characteristic notification for " + StarcomUUID.getStarcomUUIDFromUUID(characteristic.getUuid()));
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG,"Failed to set client characteristic notification for " + StarcomUUID.getStarcomUUIDFromUUID(characteristic.getUuid()) + ", error: " + e.getMessage());
+                    }
+
+                } else {
+                    Log.e(TAG,"Set notification failed for " + StarcomUUID.getStarcomUUIDFromUUID(characteristic.getUuid()));
+                }
+
+            } else {
+                Log.e(TAG,"Failed to register notification for " + StarcomUUID.getStarcomUUIDFromUUID(characteristic.getUuid()));
+            }
+
+        } else {
+            Log.e(TAG,"Characteristic not found");
         }
     }
 
